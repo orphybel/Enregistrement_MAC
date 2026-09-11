@@ -626,3 +626,32 @@ class TestSimulateur(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestVidageCacheArp(unittest.TestCase):
+    """Le vidage ne doit pas crier au manque de droits quand il n'y a rien a vider."""
+
+    def setUp(self):
+        self.vraie_table = arp.table
+
+    def tearDown(self):
+        arp.table = self.vraie_table
+
+    def test_entree_absente_n_est_pas_un_echec(self):
+        arp.table = lambda: {}
+        succes, message = arp.vider("192.168.0.100")
+        self.assertTrue(succes)
+        self.assertIn("aucune entrée", message)
+
+    def test_entree_presente_declenche_la_commande(self):
+        arp.table = lambda: {"192.168.0.100": A}
+        appels = []
+        vrai_executer = arp._executer
+        arp._executer = lambda arguments, delai=3: (appels.append(arguments), (1, "refusé"))[1]
+        try:
+            succes, message = arp.vider("192.168.0.100")
+        finally:
+            arp._executer = vrai_executer
+        self.assertEqual(appels, [["arp", "-d", "192.168.0.100"]])
+        self.assertFalse(succes)
+        self.assertIn("administrateur", message)

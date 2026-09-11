@@ -198,7 +198,7 @@ enregistrement_mac/
 └── gui.py           fenêtre Tkinter
 ```
 
-Tests (77 cas, sans aucune donnée client, sans réseau et sans appareil) :
+Tests (79 cas, sans aucune donnée client, sans réseau et sans appareil) :
 
 ```
 python -m unittest discover -s tests -t .

@@ -148,7 +148,15 @@ def vider(ip):
     jamais avale en silence : sans vidage, la table peut encore contenir la MAC
     de l'appareil precedent, et c'est exactement l'erreur que le programme doit
     eviter.
+
+    On regarde d'abord si l'entree existe. Sans cela, le vidage declenche au
+    moment ou l'appareil vient d'etre debranche tomberait tres souvent sur une
+    entree deja disparue : ``arp -d`` renverrait une erreur, et le programme
+    reclamerait les droits administrateur sans aucune raison. Une fausse alerte
+    repetee finit par etre ignoree — y compris le jour ou elle est fondee.
     """
+    if ip not in table():
+        return True, "aucune entrée ARP à vider pour %s" % ip
     code, sortie = _executer(["arp", "-d", ip])
     if code == 0:
         return True, "cache ARP vidé pour %s" % ip
