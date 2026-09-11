@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.spec
+.venv/
+EnregistrementMAC-config.json
+EnregistrementMAC-diagnostic.txt
+MAC-releves.csv
+MAC-releves/

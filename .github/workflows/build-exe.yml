@@ -1,0 +1,154 @@
+name: Construire l'executable Windows
+
+on:
+  workflow_dispatch:
+    inputs:
+      publier_release:
+        description: "Publier aussi une release telechargeable publiquement"
+        type: boolean
+        default: false
+  push:
+    branches: ["**"]
+    paths:
+      - "enregistrement_mac/**"
+      - "tests/**"
+      - "lancer.py"
+      - ".github/workflows/build-exe.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verifier que Tkinter est disponible
+        run: python -c "import tkinter; print('Tk', tkinter.TkVersion)"
+
+      - name: Lancer les tests
+        run: python -m unittest discover -s tests -t . -v
+
+      # L'interface n'est jamais importee par les tests : on s'assure au moins
+      # qu'elle se charge, sinon une faute de frappe ne se verrait qu'au banc.
+      - name: Verifier que l'interface se charge
+        run: python -c "from enregistrement_mac import gui; print('interface OK', gui.__version__)"
+
+      # Preuve que la chaine tient face au VRAI code d'ExtractionMAC. Ne bloque
+      # pas la construction : si l'autre depot devient inaccessible, on veut
+      # quand meme pouvoir produire l'executable.
+      - name: Verifier la chaine avec ExtractionMAC
+        continue-on-error: true
+        run: |
+          git clone --depth 1 https://github.com/orphybel/Extraction_Mac.git ../Extraction_Mac
+          python tests/verifier_chaine.py ../Extraction_Mac
+
+      - name: Installer PyInstaller
+        run: python -m pip install --upgrade pip pyinstaller
+
+      - name: Preparer les metadonnees de version
+        shell: python
+        run: |
+          import re, pathlib
+          version = re.search(
+              r'__version__ = "([^"]+)"',
+              pathlib.Path("enregistrement_mac/__init__.py").read_text(encoding="utf-8")).group(1)
+          quadruplet = tuple((list(int(n) for n in version.split(".")) + [0, 0, 0, 0])[:4])
+          pathlib.Path("version_info.txt").write_text(
+              "VSVersionInfo(\n"
+              "  ffi=FixedFileInfo(filevers=%r, prodvers=%r, mask=0x3f, flags=0x0,\n"
+              "                    OS=0x40004, fileType=0x1, subtype=0x0, date=(0, 0)),\n"
+              "  kids=[StringFileInfo([StringTable('040C04B0', [\n"
+              "      StringStruct('FileDescription', 'Enregistrement MAC - releve au banc de test'),\n"
+              "      StringStruct('FileVersion', '%s'),\n"
+              "      StringStruct('InternalName', 'EnregistrementMAC'),\n"
+              "      StringStruct('OriginalFilename', 'EnregistrementMAC.exe'),\n"
+              "      StringStruct('ProductName', 'Enregistrement MAC'),\n"
+              "      StringStruct('ProductVersion', '%s')])]),\n"
+              "    VarFileInfo([VarStruct('Translation', [0x040C, 1200])])]\n"
+              ")\n" % (quadruplet, quadruplet, version, version),
+              encoding="utf-8")
+          print(open("version_info.txt", encoding="utf-8").read())
+
+      - name: Construire l'executable
+        run: >
+          pyinstaller --noconfirm --clean --onefile --windowed --noupx
+          --name EnregistrementMAC
+          --version-file version_info.txt
+          --collect-submodules enregistrement_mac
+          lancer.py
+
+      - name: Verifier que l'executable a bien ete produit
+        shell: pwsh
+        run: |
+          if (-not (Test-Path dist\EnregistrementMAC.exe)) { throw "executable absent" }
+          $taille = (Get-Item dist\EnregistrementMAC.exe).Length
+          Write-Host "Taille : $([math]::Round($taille/1MB,1)) Mo"
+          if ($taille -lt 5MB) { throw "executable anormalement petit : $taille octets" }
+
+      - name: Calculer l'empreinte SHA-256
+        shell: pwsh
+        run: |
+          $h = (Get-FileHash dist\EnregistrementMAC.exe -Algorithm SHA256).Hash
+          Write-Host "SHA-256 : $h"
+          "$h  EnregistrementMAC.exe" | Out-File -Encoding ascii dist\EnregistrementMAC.exe.sha256
+
+      # Depose avant les verifications qui suivent : meme si l'une d'elles
+      # echoue, l'executable reste recuperable pour analyse.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EnregistrementMAC-windows
+          path: |
+            dist/EnregistrementMAC.exe
+            dist/EnregistrementMAC.exe.sha256
+          retention-days: 90
+
+      # Verification sur l'executable reellement produit, depuis un dossier
+      # quelconque : la configuration doit se poser a cote de lui.
+      - name: Verifier que la configuration se pose a cote de l'executable
+        shell: pwsh
+        run: |
+          $poste = "D:\poste-de-test"
+          New-Item -ItemType Directory -Path $poste | Out-Null
+          Copy-Item dist\EnregistrementMAC.exe $poste
+          Start-Process -FilePath "$poste\EnregistrementMAC.exe" -ArgumentList "--diagnostic" -Wait
+          $rapport = Join-Path $poste "EnregistrementMAC-diagnostic.txt"
+          if (-not (Test-Path $rapport)) {
+            throw "aucun diagnostic ecrit a cote de l'executable"
+          }
+          Get-Content $rapport
+          $attendu = Join-Path $poste "EnregistrementMAC-config.json"
+          if (-not (Select-String -Path $rapport -SimpleMatch -Pattern $attendu)) {
+            throw "la configuration n'est pas prevue a cote de l'executable (attendu : $attendu)"
+          }
+          Write-Host "Confirme : la configuration se pose a cote de l'executable."
+
+      # Le runner Windows n'a pas toujours de session graphique : cette
+      # verification informe sans bloquer la production de l'executable.
+      - name: Essayer d'ouvrir l'interface
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist\EnregistrementMAC.exe -ArgumentList "--simulation" -PassThru
+          Start-Sleep -Seconds 10
+          if ($p.HasExited) { throw "l'executable s'est arrete tout seul (code $($p.ExitCode))" }
+          Stop-Process -Id $p.Id -Force
+          Write-Host "L'interface s'est ouverte et est restee active 10 s."
+
+      - name: Publier une release
+        if: inputs.publier_release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Select-String -Path enregistrement_mac/__init__.py -Pattern '__version__ = "(.+)"').Matches[0].Groups[1].Value
+          $tag = "v$version-$($env:GITHUB_RUN_NUMBER)"
+          gh release create $tag dist/EnregistrementMAC.exe dist/EnregistrementMAC.exe.sha256 `
+            --title "Enregistrement MAC $version" `
+            --notes "Executable Windows autonome. Aucune installation de Python necessaire."
